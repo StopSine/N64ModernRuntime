@@ -217,13 +217,20 @@ bool recomp::load_stored_rom(std::u8string& game_id) {
     
     std::vector<uint8_t> stored_rom_data = read_file(config_path / find_it->second.stored_filename());
 
-    if (!check_hash(stored_rom_data, find_it->second.rom_hash)) {
-        // The ROM no longer has the right hash, delete it.
-        std::filesystem::remove(config_path / find_it->second.stored_filename());
-        return false;
-    }
+    std::vector<uint8_t> decompressed_rom_data{};
+    if (find_it->second.has_compressed_code) {
+        if (find_it->second.decompression_routine != nullptr) {
+            decompressed_rom_data = find_it->second.decompression_routine(stored_rom_data);
+            recomp::set_rom_contents(std::move(decompressed_rom_data));
 
-    recomp::set_rom_contents(std::move(stored_rom_data));
+            //! HACK: The game will be decompressed a second time in `mods.cpp`, disabling `has_compressed_code` will prevent this.
+            // Technically after decompression here the ROM doesn't have compressed code anymore...
+            find_it->second.has_compressed_code = false;
+        } 
+    } else {
+        // No decompression needed, use the ROM data as-is.
+        recomp::set_rom_contents(std::move(stored_rom_data));
+    }
     return true;
 }
 

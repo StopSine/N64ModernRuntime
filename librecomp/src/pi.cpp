@@ -8,6 +8,7 @@
 #include "librecomp/addresses.hpp"
 #include "librecomp/game.hpp"
 #include "librecomp/files.hpp"
+#include "librecomp/overlays.hpp"
 #include <ultramodern/ultra64.h>
 #include <ultramodern/ultramodern.hpp>
 
@@ -274,8 +275,11 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // read cart rom
             recomp::do_rom_read(rdram, rdram_address, physical_addr, size);
 
-            // Send a message to the mq to indicate that the transfer completed
-            ultramodern::enqueue_external_message(mq, 0, false, true);
+            // Send a message to the mq to indicate that the transfer completed.
+            // The raw entry points have no return queue and pass 0 here.
+            if (mq != 0) {
+                ultramodern::enqueue_external_message(mq, 0, false, true);
+            }
         } else if (physical_addr >= recomp::sram_base) {
             if (!recomp::sram_allowed()) {
                 ultramodern::error_handling::message_box("Attempted to use SRAM saving with other save type");
@@ -284,8 +288,11 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // read sram
             save_read(rdram, rdram_address, physical_addr - recomp::sram_base, size);
 
-            // Send a message to the mq to indicate that the transfer completed
-            ultramodern::enqueue_external_message(mq, 0, false, true);
+            // Send a message to the mq to indicate that the transfer completed.
+            // The raw entry points have no return queue and pass 0 here.
+            if (mq != 0) {
+                ultramodern::enqueue_external_message(mq, 0, false, true);
+            }
         } else {
             fprintf(stderr, "[WARN] PI DMA read from unknown region, phys address 0x%08X\n", physical_addr);
         }
@@ -301,8 +308,11 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // write sram
             save_write(rdram, rdram_address, physical_addr - recomp::sram_base, size);
 
-            // Send a message to the mq to indicate that the transfer completed
-            ultramodern::enqueue_external_message(mq, 0, false, true);
+            // Send a message to the mq to indicate that the transfer completed.
+            // The raw entry points have no return queue and pass 0 here.
+            if (mq != 0) {
+                ultramodern::enqueue_external_message(mq, 0, false, true);
+            }
         } else {
             fprintf(stderr, "[WARN] PI DMA write to unknown region, phys address 0x%08X\n", physical_addr);
         }
@@ -382,18 +392,51 @@ extern "C" void osPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
 }
 
 extern "C" void osEPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
-    ultramodern::error_handling::message_box(
-        "Stub `osEPiRawStartDma_recomp` function called!\n"
-        "Most games do not call this function directly, which means the libultra function\n"
-        "that uses this function was not properly named.\n"
-        "\n"
-        "If you triggered this message, please make sure you have properly identified\n"
-        "every libultra function on your recompiled game. If you are sure every libultra\n"
-        "function has been identified and you still get this problem then open an issue on\n"
-        "the N64ModernRuntime Github repository mentioning the game you are trying to\n"
-        "recompile and steps to reproduce the issue.\n"
-        "\n"
-        "The application will close now, bye and good luck!"
-    );
-    ULTRAMODERN_QUICK_EXIT();
+    // s32 osEPiRawStartDma(OSPiHandle *pihandle, s32 direction, u32 cartAddr,
+    //                      void *dramAddr, u32 size)
+    //
+    // This was a stub on the assumption that only libultra reaches the raw
+    // entry points, so naming the routine that wraps them is enough. That does
+    // not hold for Goemon's Great Adventure, whose own ROM access layer calls
+    // this directly rather than going through osEPiStartDma and the PI manager
+    // thread. The recompiled body cannot be used instead, because it programs
+    // the PI registers at 0xA4600000 and MMIO is not modelled.
+    //
+    // The transfer is synchronous and sends no completion message; callers
+    // learn it finished from PI status, and osPiGetStatus already reports idle.
+    OSPiHandle* handle = TO_PTR(OSPiHandle, ctx->r4);
+    uint32_t direction = ctx->r5;
+    uint32_t devAddr = handle->baseAddress | ctx->r6;
+    gpr dramAddr = ctx->r7;
+    uint32_t size = MEM_W(0x10, ctx->r29);
+    uint32_t physical_addr = k1_to_phys(devAddr);
+
+    debug_printf("[pi] raw DMA dev 0x%08X -> ram 0x%08X size 0x%X\n", devAddr, dramAddr, size);
+
+    do_dma(PASS_RDRAM 0, dramAddr, physical_addr, size, direction);
+
+    // Register any code sections this transfer brought into RDRAM.
+    //
+    // The recompiler only adds a section's functions to the lookup table when
+    // the section is loaded, and only the resident image is registered up
+    // front (recomp::start does that for the first megabyte). A game that
+    // pulls code in itself has to say so, which games with a decompilation do
+    // by patching their overlay loader to call recomp_load_overlays.
+    //
+    // Goemon's Great Adventure has no decompilation and its loader issues raw
+    // PI transfers, so the transfer itself is the notification: rom offset,
+    // destination and size are exactly what load_overlays takes. This also
+    // covers relocatable sections, because RELOC_HI16/LO16 resolve against
+    // section_addresses at runtime and load_overlay sets that entry.
+    if (direction == 0 && physical_addr >= recomp::rom_base) {
+        load_overlays(physical_addr - recomp::rom_base, (int32_t)dramAddr, size);
+    }
+
+    // Hardware raises the PI interrupt when the transfer finishes. Callers of
+    // the raw entry points wait on that event rather than on a return queue,
+    // so signal it here; the higher level osPiStartDma/osEPiStartDma paths
+    // report completion through the OSIoMesg return queue instead.
+    ultramodern::send_pi_message();
+
+    ctx->r2 = 0;
 }
