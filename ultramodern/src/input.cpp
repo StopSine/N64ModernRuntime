@@ -30,7 +30,11 @@ void ultramodern::measure_input_latency() {
 #define CONT_TYPE_MOUSE  0x0002
 #define CONT_TYPE_VOICE  0x0100
 
-static int max_controllers = 0;
+// Default to all ports rather than none. osContInit sets this, but a game that
+// drives the controllers over raw joybus never calls it, and a zero here means
+// osContGetReadData polls nothing and reports every port as idle rather than
+// absent. osContSetCh still narrows it.
+static int max_controllers = MAXCONTROLLERS;
 
 /* Plain controller */
 
@@ -125,6 +129,19 @@ extern "C" void osContGetQuery(RDRAM_ARG PTR(OSContStatus) data_) {
     u8 pattern;
 
     __osContGetInitData(&pattern, data);
+}
+
+// Poll the host for fresh input.
+//
+// Normally osContStartReadData does this, but a game that drives the
+// controllers over raw joybus never calls it, and then nothing ever refreshes
+// the keyboard and gamepad state -- it stays uninitialised and every button
+// reads as released.
+void ultramodern::input::poll() {
+    if (input_callbacks.poll_input != nullptr) {
+        input_callbacks.poll_input();
+    }
+    update_poll_time();
 }
 
 extern "C" void osContGetReadData(OSContPad *data) {

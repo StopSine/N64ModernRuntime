@@ -1,3 +1,5 @@
+#include <cstdio>
+
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
 

@@ -22,6 +22,11 @@ namespace recomp {
         };
 
         void alias_loaded_sections_to_mapping();
+
+        // Copy what the TLB maps at the overlay window into the flat backing the
+        // generated code reads. Pass a physical range to refresh only the pages
+        // it covers, or 0 size to refresh the whole window.
+        void refresh_overlay_window(uint32_t phys_start = 0, uint32_t size = 0);
         void register_overlays(const overlay_section_table_data_t& sections, const overlays_by_index_t& overlays);
 
         void register_patches(const char* patch_data, size_t patch_size, SectionTableEntry* code_sections, size_t num_sections);

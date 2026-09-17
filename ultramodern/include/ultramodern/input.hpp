@@ -56,6 +56,8 @@ namespace ultramodern {
             get_connected_device_info_t* get_connected_device_info;
         };
 
+        void poll();
+
         void set_callbacks(const callbacks_t& callbacks);
     }
 }

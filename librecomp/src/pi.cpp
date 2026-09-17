@@ -174,6 +174,13 @@ void save_write_ptr(const void* in, uint32_t offset, uint32_t count) {
     save_context.write_sempahore.signal();
 }
 
+void save_read_ptr(void* out, uint32_t offset, uint32_t count) {
+    assert(offset + count <= save_context.save_buffer.size());
+
+    std::lock_guard lock { save_context.save_buffer_mutex };
+    memcpy(out, &save_context.save_buffer[offset], count);
+}
+
 void save_write(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t count) {
     assert(offset + count <= save_context.save_buffer.size());
 
@@ -429,8 +436,6 @@ extern "C" void osEPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
     // covers relocatable sections, because RELOC_HI16/LO16 resolve against
     // section_addresses at runtime and load_overlay sets that entry.
     if (direction == 0 && physical_addr >= recomp::rom_base) {
-        fprintf(stderr, "[dma] rom 0x%08X -> ram 0x%08X size 0x%X\n",
-                physical_addr - recomp::rom_base, (uint32_t)dramAddr, size);
         register_sections_at_link_address(rdram, physical_addr - recomp::rom_base, (int32_t)dramAddr, size);
     }
 
