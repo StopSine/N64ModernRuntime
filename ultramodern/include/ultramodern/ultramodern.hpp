@@ -79,6 +79,7 @@ void set_main_thread();
 bool is_game_thread();
 void submit_rsp_task(RDRAM_ARG PTR(OSTask) task);
 void send_si_message();
+void send_pi_message();
 uint32_t get_speed_multiplier();
 
 // Time
