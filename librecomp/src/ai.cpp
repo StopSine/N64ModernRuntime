@@ -16,6 +16,12 @@ extern "C" void osAiSetFrequency_recomp(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void osAiSetNextBuffer_recomp(uint8_t* rdram, recomp_context* ctx) {
+    {
+        static int n = 0;
+        if (n++ < 10) {
+            fprintf(stderr, "[ai] queue buffer 0x%08X len 0x%X\n", (uint32_t)ctx->r4, (uint32_t)ctx->r5);
+        }
+    }
     ultramodern::queue_audio_buffer(rdram, ctx->r4, ctx->r5);
     ctx->r2 = 0;
 }

@@ -35,6 +35,31 @@ constexpr uint8_t JOYBUS_ERR_NO_DEVICE = 0x80;
 constexpr s32 SI_DIR_READ = 0;   // OS_READ
 constexpr s32 SI_DIR_WRITE = 1;  // OS_WRITE
 
+// Joybus data CRC over a 32 byte pak block, as the controller computes it.
+// The game verifies this, so a response with the wrong value is rejected.
+static uint8_t pak_data_crc(const uint8_t* data) {
+    uint8_t crc = 0;
+    for (int i = 0; i <= 32; i++) {
+        for (int bit = 7; bit >= 0; bit--) {
+            uint8_t xor_val = ((crc & 0x80) != 0) ? 0x85 : 0x00;
+            crc <<= 1;
+            if (i < 32 && (data[i] & (1 << bit)) != 0) {
+                crc |= 1;
+            }
+            crc ^= xor_val;
+        }
+    }
+    return crc;
+}
+
+// Backing store for the pak, one per channel. The rumble pak identifies itself
+// by reading back 0x80 from its probe region, which is what the game looks for.
+constexpr uint32_t PakSize = 32 * 1024;
+constexpr uint32_t RumbleProbeAddr = 0x8000;
+constexpr uint32_t RumbleControlAddr = 0xC000;
+static uint8_t pak_memory[MAXCONTROLLERS][PakSize];
+static bool pak_probed[MAXCONTROLLERS];
+
 static void joybus_process() {
     int channel = 0;
     size_t i = 0;
@@ -71,6 +96,14 @@ static void joybus_process() {
         }
 
         uint8_t cmd = pif_ram[cmd_off];
+        {
+            // Log only status and button reads; the pak traffic drowns them out.
+            static int n = 0;
+            if ((cmd == 0x00 || cmd == 0x01 || cmd == 0xFF) && n++ < 25) {
+                fprintf(stderr, "[joy] ch%d cmd 0x%02X buttons 0x%04X x %d\n",
+                        channel, cmd, (unsigned)(uint16_t)pads[0].button, pads[0].stick_x);
+            }
+        }
         bool present = channel == 0 && channel < MAXCONTROLLERS && pads[channel].err_no == 0;
 
         if (!present) {
@@ -83,7 +116,9 @@ static void joybus_process() {
                     // Type 0x0500 is a standard controller; no pak attached.
                     pif_ram[res_off + 0] = 0x05;
                     pif_ram[res_off + 1] = 0x00;
-                    pif_ram[res_off + 2] = 0x00;
+                    // A pak is attached; osContInit reports one too, and the
+                    // two have to agree.
+                    pif_ram[res_off + 2] = 0x01;
                 }
                 break;
             case 0x01:  // read button and stick state
@@ -95,7 +130,47 @@ static void joybus_process() {
                     pif_ram[res_off + 3] = (uint8_t)pads[channel].stick_y;
                 }
                 break;
-            default:    // controller pak (0x02/0x03) and EEPROM (0x04/0x05)
+            case 0x02: {  // read 32 bytes from the pak
+                // The two address bytes hold an 11 bit block address in their
+                // top bits; the low 5 bits are a check code.
+                uint32_t addr = ((uint32_t)pif_ram[cmd_off + 1] << 8 | pif_ram[cmd_off + 2]) & 0xFFE0;
+                if (rx >= 33) {
+                    for (int b = 0; b < 32; b++) {
+                        uint8_t value;
+                        if (addr >= RumbleProbeAddr && addr < RumbleControlAddr) {
+                            value = pak_probed[channel] ? 0x80 : 0x00;
+                        }
+                        else {
+                            value = pak_memory[channel][(addr + b) % PakSize];
+                        }
+                        pif_ram[res_off + b] = value;
+                    }
+                    pif_ram[res_off + 32] = pak_data_crc(&pif_ram[res_off]);
+                }
+                break;
+            }
+            case 0x03: {  // write 32 bytes to the pak
+                uint32_t addr = ((uint32_t)pif_ram[cmd_off + 1] << 8 | pif_ram[cmd_off + 2]) & 0xFFE0;
+                const uint8_t* payload = &pif_ram[cmd_off + 3];
+                if (addr >= RumbleProbeAddr && addr < RumbleControlAddr) {
+                    // Probing for a rumble pak; remember so the read back
+                    // identifies one.
+                    pak_probed[channel] = true;
+                }
+                else if (addr == RumbleControlAddr) {
+                    ultramodern::set_rumble(channel, payload[0] != 0);
+                }
+                else {
+                    for (int b = 0; b < 32; b++) {
+                        pak_memory[channel][(addr + b) % PakSize] = payload[b];
+                    }
+                }
+                if (rx >= 1) {
+                    pif_ram[res_off] = pak_data_crc(payload);
+                }
+                break;
+            }
+            default:    // EEPROM (0x04/0x05) and anything else
                 pif_ram[i + 1] |= JOYBUS_ERR_NO_DEVICE;
                 break;
         }

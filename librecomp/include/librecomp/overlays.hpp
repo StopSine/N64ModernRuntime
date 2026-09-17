@@ -21,6 +21,7 @@ namespace recomp {
             size_t len;
         };
 
+        void alias_loaded_sections_to_mapping();
         void register_overlays(const overlay_section_table_data_t& sections, const overlays_by_index_t& overlays);
 
         void register_patches(const char* patch_data, size_t patch_size, SectionTableEntry* code_sections, size_t num_sections);

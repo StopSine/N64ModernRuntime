@@ -86,6 +86,9 @@ void tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_t phys_lo, ui
 void tlb_unmap(uint32_t vaddr);
 void tlb_unmap_all();
 uint32_t tlb_translate(uint32_t vaddr);
+uint32_t tlb_reverse_translate(uint32_t phys);
+
+void set_rumble(int channel, bool on);
 uint32_t get_speed_multiplier();
 
 // Time

@@ -163,6 +163,14 @@ s32 osMotorStop(RDRAM_ARG PTR(OSPfs) pfs) {
     return __osMotorAccess(PASS_RDRAM pfs, false);
 }
 
+// Drive rumble without going through an OSPfs, for games that reach the pak
+// over raw joybus rather than through the osMotor entry points.
+void ultramodern::set_rumble(int channel, bool on) {
+    if (input_callbacks.set_rumble != nullptr) {
+        input_callbacks.set_rumble(channel, on);
+    }
+}
+
 s32 osMotorStart(RDRAM_ARG PTR(OSPfs) pfs) {
     return __osMotorAccess(PASS_RDRAM pfs, true);
 }

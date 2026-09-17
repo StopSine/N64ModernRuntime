@@ -55,6 +55,25 @@ void ultramodern::tlb_unmap_all() {
     }
 }
 
+// Returns the virtual address that maps to this physical one, or 0 if none
+// does. Overlays are loaded by physical address but the game refers to them
+// through the mapping, so a section has to be registered where the game will
+// call it.
+uint32_t ultramodern::tlb_reverse_translate(uint32_t phys) {
+    for (const TlbEntry& e : tlb_entries) {
+        if (!e.valid) {
+            continue;
+        }
+        if (phys >= e.phys_lo && phys < e.phys_lo + e.page_size) {
+            return e.vaddr + (phys - e.phys_lo);
+        }
+        if (phys >= e.phys_hi && phys < e.phys_hi + e.page_size) {
+            return e.vaddr + e.page_size + (phys - e.phys_hi);
+        }
+    }
+    return 0;
+}
+
 // Returns the physical address, or 0 when nothing maps this address.
 uint32_t ultramodern::tlb_translate(uint32_t vaddr) {
     for (const TlbEntry& e : tlb_entries) {

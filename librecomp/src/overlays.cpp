@@ -154,9 +154,9 @@ void load_overlay(size_t section_table_index, int32_t ram);
 //
 // Goemon's Great Adventure derives overlay offsets by masking a symbol's
 // virtual address with 0x00FFFFFF, so the section has to keep its link base for
-// that arithmetic to produce an offset. Where the data physically landed is
-// mirrored into the window backing that base, which is what the game's TLB
-// mapping does on hardware.
+// that arithmetic to produce an offset, and the game calls into the overlay
+// window through those same addresses. Where the data physically landed is
+// mirrored into the window backing that base.
 extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, int32_t ram_addr, uint32_t size) {
     for (size_t section_index = 0; section_index < sections_info.num_code_sections; section_index++) {
         const SectionTableEntry& section = sections_info.code_sections[section_index];
@@ -164,10 +164,25 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
             continue;
         }
 
+        // Displace whatever occupied this address before, so a stale overlay's
+        // entries cannot answer for offsets the new one does not cover. Match
+        // on the address rather than a size range, since overlays differ in
+        // size and unload_overlays would call that a partial unload.
+        for (auto it = loaded_sections.begin(); it != loaded_sections.end();) {
+            const SectionTableEntry& prev = sections_info.code_sections[it->section_table_index];
+            if (it->loaded_ram_addr != (int32_t)section.ram_addr || it->section_table_index == section_index) {
+                ++it;
+                continue;
+            }
+            for (size_t func_index = 0; func_index < prev.num_funcs; func_index++) {
+                func_map.erase(it->loaded_ram_addr + prev.funcs[func_index].offset);
+            }
+            section_addresses[prev.index] = prev.ram_addr;
+            it = loaded_sections.erase(it);
+        }
+
         load_overlay(section_index, (int32_t)section.ram_addr);
 
-        // Mirror the bytes to where the linked address points, when that is
-        // not where the transfer wrote them.
         int32_t loaded_at = (int32_t)(section.rom_addr - rom) + ram_addr;
         if ((uint32_t)loaded_at != section.ram_addr) {
             uint64_t dst = (uint64_t)(uint32_t)section.ram_addr - 0x80000000ull;
@@ -180,6 +195,32 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
             debug_printf("[ovl] mirrored 0x%X bytes from 0x%08X to linked 0x%08X\n",
                          copy_size, (uint32_t)loaded_at, section.ram_addr);
         }
+        debug_printf("[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
+                     section_index, section.rom_addr, section.ram_addr, (uint32_t)section.ram_addr);
+    }
+}
+
+// Give every loaded section a second set of entries at the address its memory
+// is mapped to, if it is mapped.
+//
+// Overlays are transferred before the game programs the TLB, so at load time
+// there is no mapping to register against. Once osMapTLB runs, the game starts
+// calling through the mapping instead, and those addresses have to resolve
+// too. The physical entries stay, since code already holding a direct pointer
+// keeps working.
+void recomp::overlays::alias_loaded_sections_to_mapping() {
+    for (const LoadedSection& loaded : loaded_sections) {
+        const SectionTableEntry& section = sections_info.code_sections[loaded.section_table_index];
+        uint32_t mapped = ultramodern::tlb_reverse_translate((uint32_t)loaded.loaded_ram_addr & 0x1FFFFFFF);
+        if (mapped == 0) {
+            continue;
+        }
+        for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
+            const FuncEntry& func = section.funcs[func_index];
+            func_map[(int32_t)(mapped + func.offset)] = func.func;
+        }
+        debug_printf("[ovl] aliased rom 0x%08X at 0x%08X to mapped 0x%08X\n",
+                     section.rom_addr, (uint32_t)loaded.loaded_ram_addr, mapped);
     }
 }
 
@@ -189,7 +230,7 @@ void recomp::overlays::add_loaded_function(int32_t ram, recomp_func_t* func) {
 
 void load_overlay(size_t section_table_index, int32_t ram) {
     const SectionTableEntry& section = sections_info.code_sections[section_table_index];
-    debug_printf("[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
+    fprintf(stderr, "[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
             section_table_index, section.rom_addr, section.ram_addr, (uint32_t)ram);
 
     for (size_t function_index = 0; function_index < section.num_funcs; function_index++) {
