@@ -429,7 +429,9 @@ extern "C" void osEPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
     // covers relocatable sections, because RELOC_HI16/LO16 resolve against
     // section_addresses at runtime and load_overlay sets that entry.
     if (direction == 0 && physical_addr >= recomp::rom_base) {
-        load_overlays(physical_addr - recomp::rom_base, (int32_t)dramAddr, size);
+        debug_printf("[dma] rom 0x%08X -> ram 0x%08X size 0x%X\n",
+                physical_addr - recomp::rom_base, (uint32_t)dramAddr, size);
+        register_sections_at_link_address(rdram, physical_addr - recomp::rom_base, (int32_t)dramAddr, size);
     }
 
     // Hardware raises the PI interrupt when the transfer finishes. Callers of

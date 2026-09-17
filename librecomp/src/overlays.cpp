@@ -10,6 +10,7 @@
 #include "recomp.h"
 #include "recompiler/context.h"
 #include "overlays.hpp"
+#include "librecomp/addresses.hpp"
 #include "sections.h"
 
 static recomp::overlays::overlay_section_table_data_t sections_info {};
@@ -146,12 +147,50 @@ std::span<const RelocEntry> recomp::overlays::get_section_relocs(uint16_t code_s
     return {};
 }
 
+void load_overlay(size_t section_table_index, int32_t ram);
+
+// Register the code sections a transfer brought in, at the address they were
+// linked at rather than where the transfer put them.
+//
+// Goemon's Great Adventure derives overlay offsets by masking a symbol's
+// virtual address with 0x00FFFFFF, so the section has to keep its link base for
+// that arithmetic to produce an offset. Where the data physically landed is
+// mirrored into the window backing that base, which is what the game's TLB
+// mapping does on hardware.
+extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, int32_t ram_addr, uint32_t size) {
+    for (size_t section_index = 0; section_index < sections_info.num_code_sections; section_index++) {
+        const SectionTableEntry& section = sections_info.code_sections[section_index];
+        if (section.rom_addr < rom || section.rom_addr >= rom + size) {
+            continue;
+        }
+
+        load_overlay(section_index, (int32_t)section.ram_addr);
+
+        // Mirror the bytes to where the linked address points, when that is
+        // not where the transfer wrote them.
+        int32_t loaded_at = (int32_t)(section.rom_addr - rom) + ram_addr;
+        if ((uint32_t)loaded_at != section.ram_addr) {
+            uint64_t dst = (uint64_t)(uint32_t)section.ram_addr - 0x80000000ull;
+            uint64_t src = (uint64_t)(uint32_t)loaded_at - 0x80000000ull;
+            if ((uint32_t)section.ram_addr == recomp::overlay_window_guest) {
+                dst = recomp::overlay_window_offset;
+            }
+            uint32_t copy_size = std::min<uint32_t>(section.size, (uint32_t)recomp::overlay_window_size);
+            memcpy(rdram + dst, rdram + src, copy_size);
+            debug_printf("[ovl] mirrored 0x%X bytes from 0x%08X to linked 0x%08X\n",
+                         copy_size, (uint32_t)loaded_at, section.ram_addr);
+        }
+    }
+}
+
 void recomp::overlays::add_loaded_function(int32_t ram, recomp_func_t* func) {
     func_map[ram] = func;
 }
 
 void load_overlay(size_t section_table_index, int32_t ram) {
     const SectionTableEntry& section = sections_info.code_sections[section_table_index];
+    debug_printf("[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
+            section_table_index, section.rom_addr, section.ram_addr, (uint32_t)ram);
 
     for (size_t function_index = 0; function_index < section.num_funcs; function_index++) {
         const FuncEntry& func = section.funcs[function_index];
@@ -363,12 +402,28 @@ recomp_func_t* recomp::overlays::get_func_by_section_rom_function_vram(uint32_t 
 
 extern "C" recomp_func_t * get_function(int32_t addr) {
     auto func_find = func_map.find(addr);
-    if (func_find == func_map.end()) {
-        fprintf(stderr, "Failed to find function at 0x%08X\n", addr);
+    if (func_find != func_map.end()) {
+        return func_find->second;
+    }
+
+    // A mapped address: the game called through the TLB rather than KSEG0.
+    // Translate and look the function up where it was actually loaded.
+    uint32_t phys = ultramodern::tlb_translate((uint32_t)addr);
+    if (phys != 0) {
+        int32_t kseg0 = (int32_t)(phys | 0x80000000u);
+        auto mapped_find = func_map.find(kseg0);
+        if (mapped_find != func_map.end()) {
+            return mapped_find->second;
+        }
+        fprintf(stderr, "Failed to find function at 0x%08X (TLB maps it to 0x%08X, which is not loaded)\n",
+                addr, kseg0);
         assert(false);
         std::exit(EXIT_FAILURE);
     }
-    return func_find->second;
+
+    fprintf(stderr, "Failed to find function at 0x%08X\n", addr);
+    assert(false);
+    std::exit(EXIT_FAILURE);
 }
 
 std::unordered_map<recomp_func_t*, recomp::overlays::BasePatchedFunction> recomp::overlays::get_base_patched_funcs() {

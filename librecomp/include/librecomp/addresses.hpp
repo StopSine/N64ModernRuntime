@@ -10,6 +10,29 @@ namespace recomp {
     constexpr size_t mem_size = 512ULL * 1024ULL * 1024ULL;
     // 4GB (the full address space)
     constexpr size_t allocation_size = 4096ULL * 1024ULL * 1024ULL;
+
+    // Hardware register window, made accessible as scratch rather than left
+    // unmapped. Nothing models these registers, but a game that touches them
+    // otherwise faults, because the address lands above mem_size in the
+    // reserved space. Reads then return zero and writes are discarded, which
+    // is what "unmodelled hardware" should look like; Goemon's Great Adventure
+    // programs the VI, PI and SI directly during startup.
+    //
+    // 0xA4000000..0xA5000000 covers SP, DP, VI, AI, PI and SI.
+    constexpr size_t mmio_scratch_offset = 0xA4000000ULL - 0x80000000ULL;
+    constexpr size_t mmio_scratch_size = 0x01000000ULL;
+
+    // Window backing a game's TLB-mapped overlay area. MEM_* maps a guest
+    // address to rdram + (addr - 0x80000000), so guest 0x08000000 lands here.
+    // Goemon's Great Adventure keeps its overlays at 0x08000000 and derives
+    // offsets by masking that address, so the section has to stay at its link
+    // base and the window has to be readable for the code to run from it.
+    constexpr size_t overlay_window_guest = 0x08000000ULL;
+    constexpr size_t overlay_window_offset = overlay_window_guest - 0x80000000ULL + 0x100000000ULL;
+    constexpr size_t overlay_window_size = 0x00040000ULL;
+    static_assert(overlay_window_offset + overlay_window_size <= allocation_size);
+    static_assert(mmio_scratch_offset + mmio_scratch_size <= allocation_size);
+    static_assert(mmio_scratch_offset >= mem_size, "the scratch window must sit above real rdram");
     // We need a place in rdram to hold the PI handles, so pick an address in extended rdram
     constexpr int32_t cart_handle = 0x80800000;
     constexpr int32_t drive_handle = (int32_t)(cart_handle + sizeof(OSPiHandle));

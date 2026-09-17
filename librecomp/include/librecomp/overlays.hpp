@@ -62,6 +62,7 @@ namespace recomp {
 };
 
 extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size);
+extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, int32_t ram_addr, uint32_t size);
 extern "C" void unload_overlays(int32_t ram_addr, uint32_t size);
 
 #endif

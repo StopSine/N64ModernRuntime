@@ -791,6 +791,16 @@ void recomp::start(
     if (!alloc_failed) {
         // VirtualProtect returns 0 on failure.
         alloc_failed = (VirtualProtect(rdram, mem_size, PAGE_READWRITE, &old_protect) == 0);
+        if (!alloc_failed) {
+            // See mmio_scratch_offset: give the hardware register window backing
+            // so direct register access is inert instead of fatal.
+            alloc_failed = (VirtualProtect(rdram + mmio_scratch_offset, mmio_scratch_size,
+                                           PAGE_READWRITE, &old_protect) == 0);
+        }
+        if (!alloc_failed) {
+            alloc_failed = (VirtualProtect(rdram + overlay_window_offset, overlay_window_size,
+                                           PAGE_READWRITE, &old_protect) == 0);
+        }
         if (alloc_failed) {
             VirtualFree(rdram, 0, MEM_RELEASE);
         }
@@ -801,6 +811,14 @@ void recomp::start(
     if (!alloc_failed) {
         // mprotect returns -1 on failure.
         alloc_failed = (mprotect(rdram, mem_size, PROT_READ | PROT_WRITE) == -1);
+        if (!alloc_failed) {
+            alloc_failed = (mprotect(rdram + mmio_scratch_offset, mmio_scratch_size,
+                                     PROT_READ | PROT_WRITE) == -1);
+        }
+        if (!alloc_failed) {
+            alloc_failed = (mprotect(rdram + overlay_window_offset, overlay_window_size,
+                                     PROT_READ | PROT_WRITE) == -1);
+        }
         if (alloc_failed) {
             munmap(rdram, allocation_size);
         }

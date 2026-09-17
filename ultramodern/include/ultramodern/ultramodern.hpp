@@ -80,6 +80,12 @@ bool is_game_thread();
 void submit_rsp_task(RDRAM_ARG PTR(OSTask) task);
 void send_si_message();
 void send_pi_message();
+
+// TLB, for games that map memory instead of using KSEG0 directly.
+void tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_t phys_lo, uint32_t phys_hi);
+void tlb_unmap(uint32_t vaddr);
+void tlb_unmap_all();
+uint32_t tlb_translate(uint32_t vaddr);
 uint32_t get_speed_multiplier();
 
 // Time

@@ -4,14 +4,20 @@
 
 // None of these functions need to be reimplemented, so stub them out
 extern "C" void osMapTLB_recomp(uint8_t* rdram, recomp_context* ctx) {
-    // TODO this will need to be implemented in the future for any games that actually use the TLB
+    // void osMapTLB(s32 index, OSPageMask pm, void *vaddr, u32 odd, u32 even, s32 asid)
+    //
+    // The pair's lower page is the `odd` argument and the upper one is `even`,
+    // which reads oddly but is what the hardware register order produces.
+    ultramodern::tlb_map((int)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6,
+                         (uint32_t)ctx->r7, (uint32_t)MEM_W(0x10, ctx->r29));
 }
 
 extern "C" void osUnmapTLB_recomp(uint8_t* rdram, recomp_context* ctx) {
-    // TODO this will need to be implemented in the future for any games that actually use the TLB
+    ultramodern::tlb_unmap((uint32_t)ctx->r4);
 }
 
 extern "C" void osUnmapTLBAll_recomp(uint8_t * rdram, recomp_context * ctx) {
+    ultramodern::tlb_unmap_all();
     // TODO this will need to be implemented in the future for any games that actually use the TLB
 }
 
