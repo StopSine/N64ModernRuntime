@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ultramodern/ultramodern.hpp"
@@ -47,6 +49,24 @@ static std::unordered_map<std::string, recomp_func_t*> base_exports{};
 static std::unordered_map<std::string, recomp_func_ext_t*> ext_base_exports{};
 static std::unordered_map<std::string, size_t> base_events;
 static std::unordered_map<uint32_t, recomp_func_t*> manual_patch_symbols_by_vram;
+
+// Overlay load reporting. Toggled from the SDL thread and read on the game
+// thread, hence the atomic; the reported set is only touched on the game thread
+// except when a mark clears it, which is racy in principle but only costs a
+// duplicate line.
+static std::atomic<bool> overlay_logging{false};
+static std::unordered_set<size_t> overlay_logging_reported{};
+
+void recomp::overlays::set_overlay_load_logging(bool enabled) {
+    if (enabled) {
+        overlay_logging_reported.clear();
+    }
+    overlay_logging.store(enabled);
+}
+
+bool recomp::overlays::overlay_load_logging_enabled() {
+    return overlay_logging.load();
+}
 
 extern "C" {
 int32_t* section_addresses = nullptr;
@@ -229,48 +249,44 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
         }
         debug_printf("[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
                      section_index, section.rom_addr, section.ram_addr, (uint32_t)section.ram_addr);
+
+        if (overlay_logging.load() && overlay_logging_reported.insert(section_index).second) {
+            fprintf(stderr, "[ovl-mark] section %zu  rom 0x%08X  linked 0x%08X  size 0x%X  funcs %zu\n",
+                    section_index, section.rom_addr, section.ram_addr,
+                    section.size, section.num_funcs);
+        }
     }
 }
 
-// Rebuild the lookup entries for the TLB-mapped overlay window.
+// Bring the overlay window's flat backing into agreement with the TLB. Function
+// lookups follow the mapping live in get_function, so only the backing that
+// generated code reads data through is updated here.
 //
-// Several overlays are resident at once at different physical addresses, and
-// the game selects which one the window refers to by reprogramming the TLB.
-// The window's entries are therefore derived state: clear them and re-add them
-// for whichever section the mapping currently points at, or a previously
-// mapped overlay keeps answering for offsets the current one does not cover.
+// Called on every osMapTLB, which a game may do very often, so the guard
+// matters. Comparing what each loaded section resolves to was tried as a
+// further check and cost more than the refresh it skipped.
 void recomp::overlays::alias_loaded_sections_to_mapping() {
-    // Drop whatever the window resolved to before.
-    for (auto it = func_map.begin(); it != func_map.end();) {
-        uint32_t addr = (uint32_t)it->first;
-        if (addr >= recomp::overlay_window_guest &&
-            addr < recomp::overlay_window_guest + recomp::overlay_window_size) {
-            it = func_map.erase(it);
+    {
+        static bool watch_registered = false;
+        if (!watch_registered) {
+            ultramodern::tlb_set_watch_range((uint32_t)recomp::overlay_window_guest,
+                                             (uint32_t)recomp::overlay_window_size);
+            watch_registered = true;
         }
-        else {
-            ++it;
+
+        // Only entries covering the window can change what it resolves to, and
+        // this check is a single integer compare -- no reverse translation per
+        // loaded section, which was itself costing most of the saving.
+        static uint64_t last_watch_generation = 0;
+        uint64_t watch_generation = ultramodern::tlb_watch_generation();
+
+        if (watch_generation == last_watch_generation) {
+            return;
         }
+
+        last_watch_generation = watch_generation;
     }
 
-    for (const LoadedSection& loaded : loaded_sections) {
-        const SectionTableEntry& section = sections_info.code_sections[loaded.section_table_index];
-        // A section registered at the link base has no physical address of its
-        // own to translate; it is already where the window points.
-        uint32_t phys = (uint32_t)loaded.loaded_ram_addr & 0x1FFFFFFF;
-        uint32_t mapped = ultramodern::tlb_reverse_translate(phys);
-        if (mapped == 0) {
-            continue;
-        }
-        for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
-            const FuncEntry& func = section.funcs[func_index];
-            func_map[(int32_t)(mapped + func.offset)] = func.func;
-        }
-        debug_printf("[ovl] window now resolves rom 0x%08X at 0x%08X\n",
-                     section.rom_addr, mapped);
-    }
-
-    // The mapping just changed, so the window's backing is now stale for every
-    // page of it.
     refresh_overlay_window();
 }
 
@@ -516,18 +532,24 @@ recomp_func_t* recomp::overlays::get_func_by_section_rom_function_vram(uint32_t 
 }
 
 extern "C" recomp_func_t * get_function(int32_t addr) {
-    auto func_find = func_map.find(addr);
-    if (func_find != func_map.end()) {
-        // TEMPORARY: a call through a window link address resolves to whichever
-        // overlay registered that offset last, which is not necessarily the one
-        // the game has live. Record that these happen at all.
-        if ((uint32_t)addr >= recomp::overlay_window_guest &&
-            (uint32_t)addr < recomp::overlay_window_guest + recomp::overlay_window_size) {
-            static int n = 0;
-            if (n++ < 200) {
-                fprintf(stderr, "[win] call via link address 0x%08X\n", (uint32_t)addr);
+    // Overlays all link at the window base, so a bare window address is
+    // ambiguous between them. The TLB says which one is mapped now; sections
+    // are also registered at the KSEG0 address they were loaded to, which is
+    // what this finds. Resolving here is what lets osMapTLB avoid rebuilding
+    // these entries eagerly.
+    if ((uint32_t)addr >= recomp::overlay_window_guest &&
+        (uint32_t)addr < recomp::overlay_window_guest + recomp::overlay_window_size) {
+        uint32_t window_phys = ultramodern::tlb_translate((uint32_t)addr);
+        if (window_phys != 0) {
+            auto window_find = func_map.find((int32_t)(window_phys | 0x80000000u));
+            if (window_find != func_map.end()) {
+                return window_find->second;
             }
         }
+    }
+
+    auto func_find = func_map.find(addr);
+    if (func_find != func_map.end()) {
         return func_find->second;
     }
 

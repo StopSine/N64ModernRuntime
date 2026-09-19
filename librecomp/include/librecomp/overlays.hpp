@@ -23,6 +23,14 @@ namespace recomp {
 
         void alias_loaded_sections_to_mapping();
 
+        // Report each overlay section as it is registered, to find which one
+        // holds a given actor's code. Enabling clears the set of already
+        // reported sections, so pressing the key before entering a level bounds
+        // the output to what that level brings in. Each section is reported once
+        // per mark, since overlays are registered repeatedly during play.
+        void set_overlay_load_logging(bool enabled);
+        bool overlay_load_logging_enabled();
+
         // Copy what the TLB maps at the overlay window into the flat backing the
         // generated code reads. Pass a physical range to refresh only the pages
         // it covers, or 0 size to refresh the whole window.

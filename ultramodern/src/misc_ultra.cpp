@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdio>
 
 #include "ultramodern/ultra64.h"
@@ -31,29 +32,91 @@ namespace {
     TlbEntry tlb_entries[TlbEntryCount];
 }
 
+namespace {
+    // Bumped when the table changes, so callers can skip rebuilding derived
+    // state. Coarse: any entry counts.
+    std::atomic_uint64_t tlb_generation_counter{ 1 };
+
+    // Bumped only for changes covering the watched range, for a caller that
+    // cares about one range rather than the whole table.
+    uint32_t watch_vaddr = 0;
+    uint32_t watch_size = 0;
+    std::atomic_uint64_t watch_generation_counter{ 1 };
+
+    bool overlaps_watch(const TlbEntry& e) {
+        if (!e.valid || watch_size == 0) {
+            return false;
+        }
+        uint32_t start = e.vaddr;
+        uint32_t end = e.vaddr + e.page_size * 2;
+        return start < watch_vaddr + watch_size && watch_vaddr < end;
+    }
+}
+
+uint64_t ultramodern::tlb_generation() {
+    return tlb_generation_counter.load(std::memory_order_relaxed);
+}
+
+void ultramodern::tlb_set_watch_range(uint32_t vaddr, uint32_t size) {
+    watch_vaddr = vaddr;
+    watch_size = size;
+}
+
+uint64_t ultramodern::tlb_watch_generation() {
+    return watch_generation_counter.load(std::memory_order_relaxed);
+}
+
 void ultramodern::tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_t phys_lo, uint32_t phys_hi) {
     if ((index < 0) || (index >= TlbEntryCount)) {
         return;
     }
     TlbEntry& e = tlb_entries[index];
-    e.page_size = (((page_mask | 0x1FFF) + 1) >> 1);
+    uint32_t page_size = (((page_mask | 0x1FFF) + 1) >> 1);
+    bool valid = page_size != 0;
+
+    if (e.page_size == page_size && e.vaddr == vaddr && e.phys_lo == phys_lo &&
+        e.phys_hi == phys_hi && e.valid == valid) {
+        return;
+    }
+
+    // Account for the entry moving off the watched range as well as onto it.
+    bool was_watched = overlaps_watch(e);
+
+    e.page_size = page_size;
     e.vaddr = vaddr;
     e.phys_lo = phys_lo;
     e.phys_hi = phys_hi;
-    e.valid = e.page_size != 0;
+    e.valid = valid;
+    tlb_generation_counter.fetch_add(1, std::memory_order_relaxed);
+
+    if (was_watched || overlaps_watch(e)) {
+        watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void ultramodern::tlb_unmap(uint32_t vaddr) {
     for (TlbEntry& e : tlb_entries) {
         if (e.valid && (vaddr >= e.vaddr) && (vaddr < e.vaddr + e.page_size * 2)) {
+            bool was_watched = overlaps_watch(e);
             e.valid = false;
+            tlb_generation_counter.fetch_add(1, std::memory_order_relaxed);
+            if (was_watched) {
+                watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 }
 
 void ultramodern::tlb_unmap_all() {
     for (TlbEntry& e : tlb_entries) {
-        e.valid = false;
+        if (e.valid) {
+            bool was_watched = overlaps_watch(e);
+            e.valid = false;
+            tlb_generation_counter.fetch_add(1, std::memory_order_relaxed);
+            if (was_watched) {
+                watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
 }
 

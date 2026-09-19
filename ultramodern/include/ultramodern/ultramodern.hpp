@@ -86,6 +86,11 @@ void tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_t phys_lo, ui
 void tlb_unmap(uint32_t vaddr);
 void tlb_unmap_all();
 uint32_t tlb_translate(uint32_t vaddr);
+// Changes when the table changes, for invalidating derived state.
+uint64_t tlb_generation();
+// As above, but only for changes covering the watched range.
+void tlb_set_watch_range(uint32_t vaddr, uint32_t size);
+uint64_t tlb_watch_generation();
 uint32_t tlb_reverse_translate(uint32_t phys);
 
 void set_rumble(int channel, bool on);
