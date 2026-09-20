@@ -20,13 +20,6 @@ extern "C" void osAiSetNextBuffer_recomp(uint8_t* rdram, recomp_context* ctx) {
     uint32_t addr = (uint32_t)ctx->r4;
     uint32_t len = (uint32_t)ctx->r5;
 
-    {
-        static int n = 0;
-        if (n++ < 10) {
-            fprintf(stderr, "[ai] queue buffer 0x%08X len 0x%X\n", addr, len);
-        }
-    }
-
     // Resolve and bounds check before anything dereferences this. TO_PTR maps a
     // guest address to rdram + (addr - 0x80000000) without masking, and rdram is
     // PAGE_NOACCESS above mem_size, so an address outside cached rdram faults
@@ -36,6 +29,12 @@ extern "C" void osAiSetNextBuffer_recomp(uint8_t* rdram, recomp_context* ctx) {
     uint32_t phys = osVirtualToPhysical((int32_t)addr);
 
     if (len == 0 || (len & 1) != 0 || (uint64_t)phys + len > recomp::mem_size) {
+    if ((int32_t)len <= 0) {
+        ctx->r2 = 0;
+        return;
+    }
+
+    if ((len & 1) != 0 || (uint64_t)phys + len > recomp::mem_size) {
         static int reported = 0;
         if (reported++ < 32) {
             fprintf(stderr, "[ai] rejected buffer 0x%08X (phys 0x%08X) len 0x%X\n", addr, phys, len);
