@@ -35,10 +35,14 @@ struct ScreenUpdateAction {
 struct UpdateConfigAction {
 };
 
-using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction>;
+struct DummyWorkloadAction {
+    int32_t fb_address;
+};
+
+using Action = std::variant<SpTaskAction, ScreenUpdateAction, UpdateConfigAction, DummyWorkloadAction>;
 
 struct ViState {
-    const OSViMode* mode;
+    const OSViMode* mode = nullptr;
     PTR(void) framebuffer;
     PTR(OSMesg) mq;
     OSMesg msg;
@@ -70,6 +74,11 @@ static struct {
         void update_vi() {
             ViState* next_state = get_next_state();
             const OSViMode* next_mode = next_state->mode;
+            if (next_mode == nullptr) {
+                // Skip the update if the next mode hasn't been set yet.
+                return;
+            }
+
             const OSViCommonRegs* common_regs = &next_mode->comRegs;
             const OSViFieldRegs* field_regs = &next_mode->fldRegs[field];
             PTR(void) framebuffer = osVirtualToPhysical(next_state->framebuffer);
@@ -256,6 +265,8 @@ void vi_thread_func() {
             static bool odd = false;
             set_dummy_vi(odd);
             odd = !odd;
+
+            events_context.action_queue.enqueue(DummyWorkloadAction{events_context.vi.get_next_state()->framebuffer});
         }
 
         // Queue a screen update for the graphics thread with the current VI register state.
@@ -275,13 +286,13 @@ void vi_thread_func() {
                 if (cur_state->mq != NULLPTR) {
                     // Send a message to the VI queue, and do not set it to be requeued if the queue was full.
                     // The worst case scenario is that the game misses a VI message and has to wait a little longer for the next. 
-                    ultramodern::enqueue_external_message(cur_state->mq, cur_state->msg, false, false);
+                    ultramodern::enqueue_external_message_src(cur_state->mq, cur_state->msg, false, ultramodern::EventMessageSource::Vi);
                 }
                 remaining_retraces = cur_state->retrace_count;
             }
             if (events_context.ai.mq != NULLPTR) {
                 // Send a message to the VI queue, and do not set it to be requeued if the queue was full for the same reason as the VI message above.
-                ultramodern::enqueue_external_message(events_context.ai.mq, events_context.ai.msg, false, false);
+                ultramodern::enqueue_external_message_src(events_context.ai.mq, events_context.ai.msg, false, ultramodern::EventMessageSource::Ai);
             }
         }
 
@@ -294,13 +305,13 @@ void vi_thread_func() {
 void sp_complete() {
     uint8_t* rdram = events_context.rdram;
     std::lock_guard lock{ events_context.message_mutex };
-    ultramodern::enqueue_external_message(events_context.sp.mq, events_context.sp.msg, false, true);
+    ultramodern::enqueue_external_message_src(events_context.sp.mq, events_context.sp.msg, false, ultramodern::EventMessageSource::Sp);
 }
 
 void dp_complete() {
     uint8_t* rdram = events_context.rdram;
     std::lock_guard lock{ events_context.message_mutex };
-    ultramodern::enqueue_external_message(events_context.dp.mq, events_context.dp.msg, false, true);
+    ultramodern::enqueue_external_message_src(events_context.dp.mq, events_context.dp.msg, false, ultramodern::EventMessageSource::Dp);
 }
 
 void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_ready) {
@@ -395,11 +406,6 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
         if (events_context.action_queue.wait_dequeue_timed(action, 1ms)) {
             // Determine the action type and act on it
             if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
-                // Turn on instant present if the game has been started and it hasn't been turned on yet.
-                if (ultramodern::is_game_started() && !enabled_instant_present) {
-                    renderer_context->enable_instant_present();
-                    enabled_instant_present = true;
-                }
                 // Tell the game that the RSP completed instantly. This will allow it to queue other task types, but it won't
                 // start another graphics task until the RDP is also complete. Games usually preserve the RSP inputs until the RDP
                 // is finished as well, so sending this early shouldn't be an issue in most cases.
@@ -432,6 +438,9 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 if (renderer_context->update_config(old_config, new_config)) {
                     old_config = new_config;
                 }
+            }
+            else if (const auto* dummy_workload_action = std::get_if<DummyWorkloadAction>(&action)) {
+                renderer_context->send_dummy_workload(dummy_workload_action->fb_address);
             }
         }
     }
@@ -484,6 +493,7 @@ static const OSViMode dummy_mode = []() {
 void set_dummy_vi(bool odd) {
     ViState* next_state = events_context.vi.get_next_state();
     next_state->mode = &dummy_mode;
+    next_state->control = next_state->mode->comRegs.ctrl;
     // Set up a dummy framebuffer.
     next_state->framebuffer = 0x80700000;
     if (odd) {
@@ -608,7 +618,7 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
 }
 
 void ultramodern::send_si_message() {
-    ultramodern::enqueue_external_message(events_context.si.mq, events_context.si.msg, false, true);
+    ultramodern::enqueue_external_message_src(events_context.si.mq, events_context.si.msg, false, ultramodern::EventMessageSource::Si);
 }
 
 void ultramodern::send_pi_message() {

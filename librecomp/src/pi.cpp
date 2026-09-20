@@ -282,11 +282,8 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // read cart rom
             recomp::do_rom_read(rdram, rdram_address, physical_addr, size);
 
-            // Send a message to the mq to indicate that the transfer completed.
-            // The raw entry points have no return queue and pass 0 here.
-            if (mq != 0) {
-                ultramodern::enqueue_external_message(mq, 0, false, true);
-            }
+            // Send a message to the mq to indicate that the transfer completed
+            ultramodern::enqueue_external_message_src(mq, 0, false, ultramodern::EventMessageSource::Pi);
         } else if (physical_addr >= recomp::sram_base) {
             if (!recomp::sram_allowed()) {
                 ultramodern::error_handling::message_box("Attempted to use SRAM saving with other save type");
@@ -295,11 +292,8 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // read sram
             save_read(rdram, rdram_address, physical_addr - recomp::sram_base, size);
 
-            // Send a message to the mq to indicate that the transfer completed.
-            // The raw entry points have no return queue and pass 0 here.
-            if (mq != 0) {
-                ultramodern::enqueue_external_message(mq, 0, false, true);
-            }
+            // Send a message to the mq to indicate that the transfer completed
+            ultramodern::enqueue_external_message_src(mq, 0, false, ultramodern::EventMessageSource::Pi);
         } else {
             fprintf(stderr, "[WARN] PI DMA read from unknown region, phys address 0x%08X\n", physical_addr);
         }
@@ -315,11 +309,8 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // write sram
             save_write(rdram, rdram_address, physical_addr - recomp::sram_base, size);
 
-            // Send a message to the mq to indicate that the transfer completed.
-            // The raw entry points have no return queue and pass 0 here.
-            if (mq != 0) {
-                ultramodern::enqueue_external_message(mq, 0, false, true);
-            }
+            // Send a message to the mq to indicate that the transfer completed
+            ultramodern::enqueue_external_message_src(mq, 0, false, ultramodern::EventMessageSource::Pi);
         } else {
             fprintf(stderr, "[WARN] PI DMA write to unknown region, phys address 0x%08X\n", physical_addr);
         }

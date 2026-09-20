@@ -52,6 +52,27 @@ bool thread_queue_empty(RDRAM_ARG PTR(PTR(OSThread)) queue);
 PTR(OSThread) thread_queue_peek(RDRAM_ARG PTR(PTR(OSThread)) queue);
 
 // Message queues.
+enum class EventMessageSource : int {
+    Timer,
+    Sp,
+    Si,
+    Ai,
+    Vi,
+    Pi,
+    Dp,
+};
+
+struct MessageQueueControl {
+    bool requeue_timer = true;
+    bool requeue_sp = true;
+    bool requeue_si = true;
+    bool requeue_ai = false;
+    bool requeue_vi = false;
+    bool requeue_pi = false;
+    bool requeue_dp = true;
+};
+void set_message_queue_control(const MessageQueueControl& mqc);
+void enqueue_external_message_src(PTR(OSMesgQueue) mq, OSMesg msg, bool jam, EventMessageSource src);
 void enqueue_external_message(PTR(OSMesgQueue) mq, OSMesg msg, bool jam, bool requeue_if_blocked);
 void wait_for_external_message(RDRAM_ARG1);
 void wait_for_external_message_timed(RDRAM_ARG1, u32 millis);
@@ -75,7 +96,8 @@ enum class ThreadPriority {
 void set_native_thread_name(const std::string& name);
 void set_native_thread_priority(ThreadPriority pri);
 PTR(OSThread) this_thread();
-void set_main_thread();
+void set_entrypoint_thread();
+bool is_entrypoint_thread();
 bool is_game_thread();
 void submit_rsp_task(RDRAM_ARG PTR(OSTask) task);
 void send_si_message();
