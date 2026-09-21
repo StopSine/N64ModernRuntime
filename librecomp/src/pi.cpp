@@ -174,13 +174,6 @@ void save_write_ptr(const void* in, uint32_t offset, uint32_t count) {
     save_context.write_sempahore.signal();
 }
 
-void save_read_ptr(void* out, uint32_t offset, uint32_t count) {
-    assert(offset + count <= save_context.save_buffer.size());
-
-    std::lock_guard lock { save_context.save_buffer_mutex };
-    memcpy(out, &save_context.save_buffer[offset], count);
-}
-
 void save_write(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t count) {
     assert(offset + count <= save_context.save_buffer.size());
 
@@ -348,6 +341,10 @@ extern "C" void osEPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
 
     do_dma(PASS_RDRAM mq, dramAddr, physical_addr, size, direction);
 
+    if (direction == 0 && physical_addr >= recomp::rom_base) {
+        register_sections_at_link_address(rdram, physical_addr - recomp::rom_base, (int32_t)dramAddr, size);
+    }
+
     ctx->r2 = 0;
 }
 
@@ -390,51 +387,17 @@ extern "C" void osPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
 }
 
 extern "C" void osEPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
-    // s32 osEPiRawStartDma(OSPiHandle *pihandle, s32 direction, u32 cartAddr,
-    //                      void *dramAddr, u32 size)
-    //
-    // This was a stub on the assumption that only libultra reaches the raw
-    // entry points, so naming the routine that wraps them is enough. That does
-    // not hold for Goemon's Great Adventure, whose own ROM access layer calls
-    // this directly rather than going through osEPiStartDma and the PI manager
-    // thread. The recompiled body cannot be used instead, because it programs
-    // the PI registers at 0xA4600000 and MMIO is not modelled.
-    //
-    // The transfer is synchronous and sends no completion message; callers
-    // learn it finished from PI status, and osPiGetStatus already reports idle.
-    OSPiHandle* handle = TO_PTR(OSPiHandle, ctx->r4);
-    uint32_t direction = ctx->r5;
-    uint32_t devAddr = handle->baseAddress | ctx->r6;
-    gpr dramAddr = ctx->r7;
-    uint32_t size = MEM_W(0x10, ctx->r29);
-    uint32_t physical_addr = k1_to_phys(devAddr);
-
-    debug_printf("[pi] raw DMA dev 0x%08X -> ram 0x%08X size 0x%X\n", devAddr, dramAddr, size);
-
-    do_dma(PASS_RDRAM 0, dramAddr, physical_addr, size, direction);
-
-    // Register any code sections this transfer brought into RDRAM.
-    //
-    // The recompiler only adds a section's functions to the lookup table when
-    // the section is loaded, and only the resident image is registered up
-    // front (recomp::start does that for the first megabyte). A game that
-    // pulls code in itself has to say so, which games with a decompilation do
-    // by patching their overlay loader to call recomp_load_overlays.
-    //
-    // Goemon's Great Adventure has no decompilation and its loader issues raw
-    // PI transfers, so the transfer itself is the notification: rom offset,
-    // destination and size are exactly what load_overlays takes. This also
-    // covers relocatable sections, because RELOC_HI16/LO16 resolve against
-    // section_addresses at runtime and load_overlay sets that entry.
-    if (direction == 0 && physical_addr >= recomp::rom_base) {
-        register_sections_at_link_address(rdram, physical_addr - recomp::rom_base, (int32_t)dramAddr, size);
-    }
-
-    // Hardware raises the PI interrupt when the transfer finishes. Callers of
-    // the raw entry points wait on that event rather than on a return queue,
-    // so signal it here; the higher level osPiStartDma/osEPiStartDma paths
-    // report completion through the OSIoMesg return queue instead.
-    ultramodern::send_pi_message();
-
-    ctx->r2 = 0;
+    ultramodern::error_handling::message_box(
+        "Stub `osEPiRawStartDma_recomp` function called!\n"
+        "Most games do not call this function directly, which means the libultra function\n"
+        "that uses this function was not properly named.\n"
+        "\n"
+        "If you triggered this message, please make sure you have properly identified\n"
+        "every libultra function on your recompiled game. If you are sure every libultra\n"
+        "function has been identified and you still get this problem then open an issue on\n"
+        "the N64ModernRuntime Github repository mentioning the game you are trying to\n"
+        "\n"
+        "The application will close now, bye and good luck!"
+    );
+    ULTRAMODERN_QUICK_EXIT();
 }

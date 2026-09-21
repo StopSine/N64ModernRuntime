@@ -54,8 +54,6 @@ struct ViState {
 #define VI_STATE_BLACK 0x20
 #define VI_STATE_REPEATLINE 0x40
 
-constexpr int SiMaxQueues = 4;
-
 static struct {
     struct {
         std::thread thread;
@@ -135,19 +133,7 @@ static struct {
     struct {
         PTR(OSMesgQueue) mq = NULLPTR;
         OSMesg msg = (OSMesg)0;
-        // Every queue that has registered for SI, not just the most recent.
-        // Goemon's Great Adventure has two subsystems waiting on SI completion
-        // and each registers once, so keeping only the latest leaves the other
-        // blocked forever after its first transfer. Transfers here finish
-        // synchronously, so telling both is safe.
-        PTR(OSMesgQueue) queues[SiMaxQueues] = {};
-        OSMesg msgs[SiMaxQueues] = {};
-        int count = 0;
     } si;
-    struct {
-        PTR(OSMesgQueue) mq = NULLPTR;
-        OSMesg msg = (OSMesg)0;
-    } pi;
     // The same message queue may be used for multiple events, so share a mutex for all of them
     std::mutex message_mutex;
     uint8_t* rdram;
@@ -176,37 +162,9 @@ extern "C" void osSetEventMesg(RDRAM_ARG OSEvent event_id, PTR(OSMesgQueue) mq_,
             events_context.ai.msg = msg;
             events_context.ai.mq = mq_;
             break;
-        case OS_EVENT_SI: {
+        case OS_EVENT_SI:
             events_context.si.msg = msg;
             events_context.si.mq = mq_;
-            bool known = false;
-            for (int i = 0; i < events_context.si.count; i++) {
-                if (events_context.si.queues[i] == mq_) {
-                    events_context.si.msgs[i] = msg;
-                    known = true;
-                    break;
-                }
-            }
-            if (!known && events_context.si.count < SiMaxQueues) {
-                events_context.si.queues[events_context.si.count] = mq_;
-                events_context.si.msgs[events_context.si.count] = msg;
-                events_context.si.count++;
-            }
-            break;
-        }
-        case OS_EVENT_VI: {
-            // Equivalent to osViSetEvent with a retrace count of 1; the VI
-            // thread delivers from the same state.
-            ViState* next_state = events_context.vi.get_next_state();
-            next_state->mq = mq_;
-            next_state->msg = msg;
-            next_state->retrace_count = 1;
-            break;
-        }
-        case OS_EVENT_PI:
-            events_context.pi.msg = msg;
-            events_context.pi.mq = mq_;
-            break;
     }
 }
 
@@ -619,10 +577,6 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
 
 void ultramodern::send_si_message() {
     ultramodern::enqueue_external_message_src(events_context.si.mq, events_context.si.msg, false, ultramodern::EventMessageSource::Si);
-}
-
-void ultramodern::send_pi_message() {
-    ultramodern::enqueue_external_message(events_context.pi.mq, events_context.pi.msg, false, true);
 }
 
 void ultramodern::init_events(RDRAM_ARG ultramodern::renderer::WindowHandle window_handle) {
