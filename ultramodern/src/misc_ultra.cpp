@@ -33,10 +33,6 @@ namespace {
 }
 
 namespace {
-    // Bumped when the table changes, so callers can skip rebuilding derived
-    // state. Coarse: any entry counts.
-    std::atomic_uint64_t tlb_generation_counter{ 1 };
-
     // Bumped only for changes covering the watched range, for a caller that
     // cares about one range rather than the whole table.
     uint32_t watch_vaddr = 0;
@@ -51,10 +47,6 @@ namespace {
         uint32_t end = e.vaddr + e.page_size * 2;
         return start < watch_vaddr + watch_size && watch_vaddr < end;
     }
-}
-
-uint64_t ultramodern::tlb_generation() {
-    return tlb_generation_counter.load(std::memory_order_relaxed);
 }
 
 void ultramodern::tlb_set_watch_range(uint32_t vaddr, uint32_t size) {
@@ -87,7 +79,6 @@ void ultramodern::tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_
     e.phys_lo = phys_lo;
     e.phys_hi = phys_hi;
     e.valid = valid;
-    tlb_generation_counter.fetch_add(1, std::memory_order_relaxed);
 
     if (was_watched || overlaps_watch(e)) {
         watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
@@ -99,7 +90,6 @@ void ultramodern::tlb_unmap(uint32_t vaddr) {
         if (e.valid && (vaddr >= e.vaddr) && (vaddr < e.vaddr + e.page_size * 2)) {
             bool was_watched = overlaps_watch(e);
             e.valid = false;
-            tlb_generation_counter.fetch_add(1, std::memory_order_relaxed);
             if (was_watched) {
                 watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
             }
@@ -112,31 +102,11 @@ void ultramodern::tlb_unmap_all() {
         if (e.valid) {
             bool was_watched = overlaps_watch(e);
             e.valid = false;
-            tlb_generation_counter.fetch_add(1, std::memory_order_relaxed);
             if (was_watched) {
                 watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
             }
         }
     }
-}
-
-// Returns the virtual address that maps to this physical one, or 0 if none
-// does. Overlays are loaded by physical address but the game refers to them
-// through the mapping, so a section has to be registered where the game will
-// call it.
-uint32_t ultramodern::tlb_reverse_translate(uint32_t phys) {
-    for (const TlbEntry& e : tlb_entries) {
-        if (!e.valid) {
-            continue;
-        }
-        if (phys >= e.phys_lo && phys < e.phys_lo + e.page_size) {
-            return e.vaddr + (phys - e.phys_lo);
-        }
-        if (phys >= e.phys_hi && phys < e.phys_hi + e.page_size) {
-            return e.vaddr + e.page_size + (phys - e.phys_hi);
-        }
-    }
-    return 0;
 }
 
 // Returns the physical address, or 0 when nothing maps this address.

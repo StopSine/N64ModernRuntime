@@ -1,10 +1,8 @@
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "ultramodern/ultramodern.hpp"
@@ -49,24 +47,6 @@ static std::unordered_map<std::string, recomp_func_t*> base_exports{};
 static std::unordered_map<std::string, recomp_func_ext_t*> ext_base_exports{};
 static std::unordered_map<std::string, size_t> base_events;
 static std::unordered_map<uint32_t, recomp_func_t*> manual_patch_symbols_by_vram;
-
-// Overlay load reporting. Toggled from the SDL thread and read on the game
-// thread, hence the atomic; the reported set is only touched on the game thread
-// except when a mark clears it, which is racy in principle but only costs a
-// duplicate line.
-static std::atomic<bool> overlay_logging{false};
-static std::unordered_set<size_t> overlay_logging_reported{};
-
-void recomp::overlays::set_overlay_load_logging(bool enabled) {
-    if (enabled) {
-        overlay_logging_reported.clear();
-    }
-    overlay_logging.store(enabled);
-}
-
-bool recomp::overlays::overlay_load_logging_enabled() {
-    return overlay_logging.load();
-}
 
 extern "C" {
 int32_t* section_addresses = nullptr;
@@ -223,19 +203,15 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
 
         // Also record it where it physically landed. The window's entries are
         // rebuilt from these whenever the TLB mapping changes.
-
         if ((uint32_t)physical_at != section.ram_addr) {
             for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
                 const FuncEntry& func = section.funcs[func_index];
                 func_map[physical_at + func.offset] = func.func;
             }
             loaded_sections.emplace_back(physical_at, section_index);
-        }
 
-        int32_t loaded_at = (int32_t)(section.rom_addr - rom) + ram_addr;
-        if ((uint32_t)loaded_at != section.ram_addr) {
             uint64_t dst = (uint64_t)(uint32_t)section.ram_addr - 0x80000000ull;
-            uint64_t src = (uint64_t)(uint32_t)loaded_at - 0x80000000ull;
+            uint64_t src = (uint64_t)(uint32_t)physical_at - 0x80000000ull;
             if ((uint32_t)section.ram_addr == recomp::overlay_window_guest) {
                 dst = recomp::overlay_window_offset;
                 // Only one overlay's bytes can occupy the window backing at a
@@ -245,16 +221,10 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
             uint32_t copy_size = std::min<uint32_t>(section.size, (uint32_t)recomp::overlay_window_size);
             memcpy(rdram + dst, rdram + src, copy_size);
             debug_printf("[ovl] mirrored 0x%X bytes from 0x%08X to linked 0x%08X\n",
-                         copy_size, (uint32_t)loaded_at, section.ram_addr);
+                         copy_size, (uint32_t)physical_at, section.ram_addr);
         }
         debug_printf("[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
                      section_index, section.rom_addr, section.ram_addr, (uint32_t)section.ram_addr);
-
-        if (overlay_logging.load() && overlay_logging_reported.insert(section_index).second) {
-            fprintf(stderr, "[ovl-mark] section %zu  rom 0x%08X  linked 0x%08X  size 0x%X  funcs %zu\n",
-                    section_index, section.rom_addr, section.ram_addr,
-                    section.size, section.num_funcs);
-        }
     }
 }
 
@@ -323,6 +293,7 @@ void recomp::overlays::add_loaded_function(int32_t ram, recomp_func_t* func) {
 
 void load_overlay(size_t section_table_index, int32_t ram) {
     const SectionTableEntry& section = sections_info.code_sections[section_table_index];
+
     for (size_t function_index = 0; function_index < section.num_funcs; function_index++) {
         const FuncEntry& func = section.funcs[function_index];
         func_map[ram + func.offset] = func.func;

@@ -403,6 +403,7 @@ extern "C" void osEPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
         "every libultra function on your recompiled game. If you are sure every libultra\n"
         "function has been identified and you still get this problem then open an issue on\n"
         "the N64ModernRuntime Github repository mentioning the game you are trying to\n"
+        "recompile and steps to reproduce the issue.\n"
         "\n"
         "The application will close now, bye and good luck!"
     );
