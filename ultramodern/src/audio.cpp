@@ -1,8 +1,14 @@
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 
 static uint32_t sample_rate = 48000;
+
+// The largest buffer the game has handed to the AI. Hardware can never report
+// more remaining than the DMA in flight, so this bounds what we may report.
+static std::atomic<uint32_t> queued_buffer_bytes{ 0 };
 
 static ultramodern::audio_callbacks_t audio_callbacks;
 
@@ -31,6 +37,7 @@ void ultramodern::queue_audio_buffer(RDRAM_ARG PTR(int16_t) audio_data_, uint32_
 
     // Queue the swapped audio data.
     if (sample_count > 0 && audio_callbacks.queue_samples) {
+        queued_buffer_bytes.store(std::max(queued_buffer_bytes.load(), byte_count));
         audio_callbacks.queue_samples(TO_PTR(int16_t, audio_data_), sample_count);
     }
 }
@@ -62,6 +69,14 @@ uint32_t ultramodern::get_remaining_audio_bytes() {
     }
     else {
         buffered_byte_count = 0;
+    }
+
+    // The host queue runs deeper than the AI ever could, and a driver that
+    // computes "target minus remaining" underflows once it does. Hardware is
+    // bounded by the buffer in flight, so bound the report the same way.
+    uint32_t outstanding = queued_buffer_bytes.load();
+    if (outstanding != 0) {
+        buffered_byte_count = std::min(buffered_byte_count, outstanding);
     }
     return buffered_byte_count;
 }
