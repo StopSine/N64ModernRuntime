@@ -978,6 +978,11 @@ void recomp::start(const recomp::Configuration& cfg) {
         return;
     }
 
+    // The allocation moves every launch, so an external debugger has no fixed
+    // address to work from. Publishing it here lets one resolve a guest address
+    // as [recomp_rdram_base] + (guest - 0x80000000) without being told the base.
+    recomp_rdram_base = rdram;
+
     recomp::register_heap_exports();
     recomp::mods::register_config_exports();
     recomp::mods::register_hook_exports();

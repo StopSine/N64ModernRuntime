@@ -25,6 +25,7 @@ add_library(ultramodern STATIC
 
 target_include_directories(ultramodern PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include/"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../N64Recomp/include"
     "${PROJECT_SOURCE_DIR}/../thirdparty"
     "${PROJECT_SOURCE_DIR}/../thirdparty/concurrentqueue"
     "${PROJECT_SOURCE_DIR}/../thirdparty/sse2neon"

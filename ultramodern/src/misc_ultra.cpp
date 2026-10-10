@@ -1,8 +1,20 @@
-#include <atomic>
 #include <cstdio>
 
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
+#include "ultramodern/recomp_overrides.h"
+#include "recomp.h"
+
+// The page table the recompiled code's memory accesses resolve through. Zero
+// size leaves every access flat, so a game that does not map memory pays only
+// one compare.
+extern "C" {
+    uint64_t recomp_tlb_window_begin = 0;
+    uint64_t recomp_tlb_window_size = 0;
+    uint32_t recomp_tlb_page_offsets[RECOMP_TLB_MAX_PAGES];
+
+    uint8_t* recomp_rdram_base = nullptr;
+}
 
 #define K0BASE        0x80000000
 #define K1BASE        0xA0000000
@@ -33,29 +45,34 @@ namespace {
 }
 
 namespace {
-    // Bumped only for changes covering the watched range, for a caller that
-    // cares about one range rather than the whole table.
-    uint32_t watch_vaddr = 0;
-    uint32_t watch_size = 0;
-    std::atomic_uint64_t watch_generation_counter{ 1 };
+    uint32_t translation_vaddr = 0;
 
-    bool overlaps_watch(const TlbEntry& e) {
-        if (!e.valid || watch_size == 0) {
-            return false;
+    void rebuild_translation_pages() {
+        constexpr uint32_t page_size = 1u << RECOMP_TLB_PAGE_SHIFT;
+        size_t page_count = (size_t)(recomp_tlb_window_size >> RECOMP_TLB_PAGE_SHIFT);
+
+        for (size_t page = 0; page < page_count; page++) {
+            uint32_t phys = ultramodern::tlb_translate(translation_vaddr + (uint32_t)page * page_size);
+            recomp_tlb_page_offsets[page] = (phys != 0) ? phys : UINT32_MAX;
         }
-        uint32_t start = e.vaddr;
-        uint32_t end = e.vaddr + e.page_size * 2;
-        return start < watch_vaddr + watch_size && watch_vaddr < end;
     }
 }
 
-void ultramodern::tlb_set_watch_range(uint32_t vaddr, uint32_t size) {
-    watch_vaddr = vaddr;
-    watch_size = size;
-}
+// Register the range the recompiled code should resolve through the TLB rather
+// than address flatly. Until this is called every access stays flat.
+void ultramodern::tlb_set_translation_range(uint32_t vaddr, uint32_t size) {
+    size_t page_count = size >> RECOMP_TLB_PAGE_SHIFT;
+    if (page_count > RECOMP_TLB_MAX_PAGES) {
+        return;
+    }
 
-uint64_t ultramodern::tlb_watch_generation() {
-    return watch_generation_counter.load(std::memory_order_relaxed);
+    translation_vaddr = vaddr;
+    // A mapped address is not KSEG0, so its rdram offset is the address plus
+    // the KSEG0 base rather than minus it.
+    recomp_tlb_window_begin = (uint64_t)vaddr + 0x80000000ull;
+    recomp_tlb_window_size = size;
+
+    rebuild_translation_pages();
 }
 
 void ultramodern::tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_t phys_lo, uint32_t phys_hi) {
@@ -71,42 +88,31 @@ void ultramodern::tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_
         return;
     }
 
-    // Account for the entry moving off the watched range as well as onto it.
-    bool was_watched = overlaps_watch(e);
-
     e.page_size = page_size;
     e.vaddr = vaddr;
     e.phys_lo = phys_lo;
     e.phys_hi = phys_hi;
     e.valid = valid;
 
-    if (was_watched || overlaps_watch(e)) {
-        watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
-    }
+    rebuild_translation_pages();
 }
 
 void ultramodern::tlb_unmap(uint32_t vaddr) {
     for (TlbEntry& e : tlb_entries) {
         if (e.valid && (vaddr >= e.vaddr) && (vaddr < e.vaddr + e.page_size * 2)) {
-            bool was_watched = overlaps_watch(e);
             e.valid = false;
-            if (was_watched) {
-                watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
-            }
         }
     }
+
+    rebuild_translation_pages();
 }
 
 void ultramodern::tlb_unmap_all() {
     for (TlbEntry& e : tlb_entries) {
-        if (e.valid) {
-            bool was_watched = overlaps_watch(e);
-            e.valid = false;
-            if (was_watched) {
-                watch_generation_counter.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
+        e.valid = false;
     }
+
+    rebuild_translation_pages();
 }
 
 // Returns the physical address, or 0 when nothing maps this address.

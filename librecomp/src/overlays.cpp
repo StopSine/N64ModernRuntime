@@ -38,10 +38,6 @@ static std::unordered_map<uint32_t, uint16_t> code_sections_by_rom{};
 static std::unordered_map<uint32_t, uint16_t> patch_code_sections_by_rom{};
 static std::vector<LoadedSection> loaded_sections{};
 
-// The RDRAM base, kept so the overlay window can be refreshed from paths that
-// do not carry it. register_sections_at_link_address runs long before anything
-// is mapped, so this is always set by the time it is needed.
-static uint8_t* window_rdram = nullptr;
 static std::unordered_map<int32_t, recomp_func_t*> func_map{};
 static std::unordered_map<std::string, recomp_func_t*> base_exports{};
 static std::unordered_map<std::string, recomp_func_ext_t*> ext_base_exports{};
@@ -163,17 +159,26 @@ void load_overlay(size_t section_table_index, int32_t ram);
 // window through those same addresses. Where the data physically landed is
 // mirrored into the window backing that base.
 extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, int32_t ram_addr, uint32_t size) {
-    window_rdram = rdram;
-    // A transfer into memory the window currently maps has to be reflected in
-    // the window's backing, or reads through 0x08000000 return the previous
-    // contents of that page.
-    recomp::overlays::refresh_overlay_window((uint32_t)ram_addr & 0x1FFFFFFF, size);
+    // init_overlays sorts the table by rom address, so the sections a transfer
+    // covers are a contiguous range. This runs on every ROM read, so finding
+    // them by bounds rather than by scanning all of them matters.
+    const SectionTableEntry* sections_begin = &sections_info.code_sections[0];
+    const SectionTableEntry* sections_end = sections_begin + sections_info.num_code_sections;
 
-    for (size_t section_index = 0; section_index < sections_info.num_code_sections; section_index++) {
-        const SectionTableEntry& section = sections_info.code_sections[section_index];
-        if (section.rom_addr < rom || section.rom_addr >= rom + size) {
-            continue;
+    auto lower = std::lower_bound(sections_begin, sections_end, rom,
+        [](const SectionTableEntry& entry, uint32_t addr) {
+            return entry.rom_addr < addr;
         }
+    );
+    auto upper = std::lower_bound(lower, sections_end, rom + size,
+        [](const SectionTableEntry& entry, uint32_t addr) {
+            return entry.rom_addr < addr;
+        }
+    );
+
+    for (auto section_it = lower; section_it != upper; ++section_it) {
+        size_t section_index = (size_t)(section_it - sections_begin);
+        const SectionTableEntry& section = *section_it;
 
         int32_t physical_at = (int32_t)(section.rom_addr - rom) + ram_addr;
 
@@ -201,89 +206,17 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
 
         load_overlay(section_index, (int32_t)section.ram_addr);
 
-        // Also record it where it physically landed. The window's entries are
-        // rebuilt from these whenever the TLB mapping changes.
+        // Also record it where it physically landed, so a call through the
+        // window resolves once get_function translates the address.
         if ((uint32_t)physical_at != section.ram_addr) {
             for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
                 const FuncEntry& func = section.funcs[func_index];
                 func_map[physical_at + func.offset] = func.func;
             }
             loaded_sections.emplace_back(physical_at, section_index);
-
-            uint64_t dst = (uint64_t)(uint32_t)section.ram_addr - 0x80000000ull;
-            uint64_t src = (uint64_t)(uint32_t)physical_at - 0x80000000ull;
-            if ((uint32_t)section.ram_addr == recomp::overlay_window_guest) {
-                dst = recomp::overlay_window_offset;
-                // Only one overlay's bytes can occupy the window backing at a
-                // time, so which one landed there last is the question when the
-                // window resolves to the wrong body.
-            }
-            uint32_t copy_size = std::min<uint32_t>(section.size, (uint32_t)recomp::overlay_window_size);
-            memcpy(rdram + dst, rdram + src, copy_size);
-            debug_printf("[ovl] mirrored 0x%X bytes from 0x%08X to linked 0x%08X\n",
-                         copy_size, (uint32_t)physical_at, section.ram_addr);
         }
         debug_printf("[ovl] register section idx %zu (rom 0x%08X, linked 0x%08X) at 0x%08X\n",
                      section_index, section.rom_addr, section.ram_addr, (uint32_t)section.ram_addr);
-    }
-}
-
-// Bring the overlay window's flat backing into agreement with the TLB. Function
-// lookups follow the mapping live in get_function, so only the backing that
-// generated code reads data through is updated here.
-//
-// Called on every osMapTLB, which a game may do very often, so the guard
-// matters. Comparing what each loaded section resolves to was tried as a
-// further check and cost more than the refresh it skipped.
-void recomp::overlays::alias_loaded_sections_to_mapping() {
-    {
-        static bool watch_registered = false;
-        if (!watch_registered) {
-            ultramodern::tlb_set_watch_range((uint32_t)recomp::overlay_window_guest,
-                                             (uint32_t)recomp::overlay_window_size);
-            watch_registered = true;
-        }
-
-        // Only entries covering the window can change what it resolves to, and
-        // this check is a single integer compare -- no reverse translation per
-        // loaded section, which was itself costing most of the saving.
-        static uint64_t last_watch_generation = 0;
-        uint64_t watch_generation = ultramodern::tlb_watch_generation();
-
-        if (watch_generation == last_watch_generation) {
-            return;
-        }
-
-        last_watch_generation = watch_generation;
-    }
-
-    refresh_overlay_window();
-}
-
-// Make the window's flat backing agree with what the TLB maps there.
-//
-// The generated code reaches guest 0x08000000 as rdram + overlay_window_offset,
-// a flat address that knows nothing about the mapping, so whatever the game
-// last programmed into the TLB has to be copied into that backing for reads to
-// see it. Copying only the loaded code sections is not enough: the game also
-// reads overlay *data* through the window, and it gets whichever code happened
-// to be mirrored there instead -- which is how an instruction word ends up
-// being used as a pointer.
-void recomp::overlays::refresh_overlay_window(uint32_t phys_start, uint32_t size) {
-    if (window_rdram == nullptr) {
-        return;
-    }
-    constexpr uint32_t page = 0x1000;
-    for (uint32_t off = 0; off < (uint32_t)recomp::overlay_window_size; off += page) {
-        uint32_t phys = ultramodern::tlb_translate((uint32_t)recomp::overlay_window_guest + off);
-        if (phys == 0) {
-            continue;
-        }
-        // When a range is given, only the pages it touches need recopying.
-        if (size != 0 && (phys + page <= phys_start || phys >= phys_start + size)) {
-            continue;
-        }
-        memcpy(window_rdram + recomp::overlay_window_offset + off, window_rdram + phys, page);
     }
 }
 
@@ -413,6 +346,11 @@ extern "C" void unload_overlays(int32_t ram_addr, uint32_t size) {
 }
 
 void recomp::overlays::init_overlays() {
+    // Accesses to the overlay window resolve through the TLB from here on, so
+    // a write the game makes through the mapping reaches the page behind it.
+    ultramodern::tlb_set_translation_range((uint32_t)recomp::overlay_window_guest,
+                                           (uint32_t)recomp::overlay_window_size);
+
     func_map.clear();
     section_addresses = (int32_t *)calloc(sections_info.total_num_sections, sizeof(int32_t));
     

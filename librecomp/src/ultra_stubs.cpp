@@ -11,9 +11,6 @@ extern "C" void osMapTLB_recomp(uint8_t* rdram, recomp_context* ctx) {
     // which reads oddly but is what the hardware register order produces.
     ultramodern::tlb_map((int)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6,
                          (uint32_t)ctx->r7, (uint32_t)MEM_W(0x10, ctx->r29));
-
-    // The mapping changed, so the window's backing is stale.
-    recomp::overlays::alias_loaded_sections_to_mapping();
 }
 
 extern "C" void osUnmapTLB_recomp(uint8_t* rdram, recomp_context* ctx) {

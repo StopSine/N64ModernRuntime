@@ -107,10 +107,10 @@ void tlb_map(int index, uint32_t page_mask, uint32_t vaddr, uint32_t phys_lo, ui
 void tlb_unmap(uint32_t vaddr);
 void tlb_unmap_all();
 uint32_t tlb_translate(uint32_t vaddr);
-// Changes only for table changes covering the watched range, for invalidating
-// state derived from that range.
-void tlb_set_watch_range(uint32_t vaddr, uint32_t size);
-uint64_t tlb_watch_generation();
+// Range the recompiled code resolves through the TLB instead of addressing
+// flatly. Without this a mapped write lands in a flat backing the mapping never
+// reads back.
+void tlb_set_translation_range(uint32_t vaddr, uint32_t size);
 
 void set_rumble(int channel, bool on);
 uint32_t get_speed_multiplier();
