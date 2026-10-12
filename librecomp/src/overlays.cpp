@@ -197,8 +197,24 @@ extern "C" void register_sections_at_link_address(uint8_t* rdram, uint32_t rom, 
                 ++it;
                 continue;
             }
+            // The DMA only writes the new section's own length, so a shorter
+            // section leaves the tail of a longer one intact and the game still
+            // calls into it. Drop only the entries the write actually covers.
+            uint32_t write_begin = (uint32_t)physical_at;
+            uint32_t write_end = write_begin + section.size;
+            uint32_t prev_begin = (uint32_t)it->loaded_ram_addr;
             for (size_t func_index = 0; func_index < prev.num_funcs; func_index++) {
-                func_map.erase(it->loaded_ram_addr + prev.funcs[func_index].offset);
+                uint32_t func_addr = prev_begin + prev.funcs[func_index].offset;
+                if (func_addr >= write_begin && func_addr < write_end) {
+                    func_map.erase((int32_t)func_addr);
+                }
+            }
+
+            bool fully_covered = write_begin <= prev_begin &&
+                                 prev_begin + prev.size <= write_end;
+            if (!fully_covered) {
+                ++it;
+                continue;
             }
             section_addresses[prev.index] = prev.ram_addr;
             it = loaded_sections.erase(it);
